@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Curio — Ask until it clicks</title>
+  <link rel="stylesheet" href="/public/style.css" />
+</head>
+<body>
+  <header class="site-header">
+    <div class="brand">
+      <div class="logo">CURIO</div>
+      <div class="tagline">Ask until it clicks.</div>
+    </div>
+    <div class="role-label">AI Educational Tutor</div>
+  </header>
+
+  <main class="hero">
+    <div class="hero-inner">
+      <h1 class="hero-title">Understand anything.</h1>
+      <div class="hero-sub">Three complementary explanations for every question: Plain & Simple, Real-world Analogy, and Step-by-Step.</div>
+      <p class="hero-support">Type a question below (math, physics, chemistry, history, languages, and more). Curio will explain it in three distinct ways.</p>
+
+      <form id="question-form" class="question-form" onsubmit="return false;">
+        <input id="question-input" name="question" placeholder="Ask a question — e.g. \"Explain Newton's First Law\"" autocomplete="off" />
+        <button id="explain-btn" type="submit">✦ Explain It</button>
+      </form>
+
+      <div class="example-questions" id="examples">
+        <button class="example">What is a variable in programming?</button>
+        <button class="example">Solve 2x + 5 = 15</button>
+        <button class="example">Explain photosynthesis</button>
+      </div>
+
+      <div id="status" class="status" aria-live="polite"></div>
+    </div>
+
+    <canvas class="space-bg" id="space-canvas" width="1600" height="900" aria-hidden="true"></canvas>
+  </main>
+
+  <section class="results">
+    <div class="cards" id="cards">
+      <article class="card card-violet" tabindex="0">
+        <h3>Plain & Simple <span class="purpose">Clear explanation</span></h3>
+        <div class="card-body" id="plain">—</div>
+        <div class="card-footer"><button class="helped">👍 Helpful</button></div>
+      </article>
+
+      <article class="card card-cyan" tabindex="0">
+        <h3>Real-world Analogy <span class="purpose">Builds intuition</span></h3>
+        <div class="card-body" id="analogy">—</div>
+        <div class="card-footer"><button class="helped">👍 Helpful</button></div>
+      </article>
+
+      <article class="card card-green" tabindex="0">
+        <h3>Step-by-Step <span class="purpose">Detailed reasoning</span></h3>
+        <div class="card-body" id="step">—</div>
+        <div class="card-footer"><button class="helped">👍 Helpful</button></div>
+      </article>
+    </div>
+  </section>
+
+  <footer class="site-footer">Curio — built for focused learning.</footer>
+
+  <script src="/public/app.js"></script>
+</body>
+</html>

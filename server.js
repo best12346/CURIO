@@ -5,10 +5,12 @@
 //   { plain: string, analogy: string, step_by_step: string }
 
 const express = require('express');
-const axios = require('axios');
 const path = require('path');
 const cors = require('cors');
 require('dotenv').config();
+
+// Use the official Hugging Face inference client (server-side only)
+const { HfInference } = require('@huggingface/inference');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -22,7 +24,7 @@ function makePrompt(question) {
 
 - "plain": A short, clear explanation in everyday language. Keep it concise (2-4 short paragraphs) and helpful.
 - "analogy": A meaningful real-world analogy that helps build intuition. Connect the analogy back to the academic concept in a final short paragraph.
-- "step_by_step": A detailed logical breakdown that walks through the reasoning or calculations step-by-step. For mathematics or quantitative problems show each calculation and verify the final answer. Use numbered steps or clear separators.
+- "step_by_step": A detailed logical breakdown that walks through the reasoning or calculations step-by-step. For mathematics or quantitative problems show each calculation and verify the final answer.
 
 Rules:
 - Output only valid JSON. Do not include any surrounding commentary or markdown. If you cannot fully answer, provide the best explanation you can in the three fields.
@@ -31,6 +33,24 @@ Rules:
 Question: """
 ${question}
 """`;
+}
+
+// Helper: validate the parsed model response according to your policy
+function validateResponse(obj) {
+  if (!obj || typeof obj !== 'object') return { ok: false, reason: 'Response is not an object' };
+
+  const plain = typeof obj.plain === 'string' ? obj.plain.trim() : (typeof obj.plain_text === 'string' ? obj.plain_text.trim() : null);
+  const analogy = typeof obj.analogy === 'string' ? obj.analogy.trim() : (typeof obj.real_world_analogy === 'string' ? obj.real_world_analogy.trim() : null);
+  const step_by_step = typeof obj.step_by_step === 'string' ? obj.step_by_step.trim() : (typeof obj.steps === 'string' ? obj.steps.trim() : null);
+
+  if (!plain || !analogy || !step_by_step) return { ok: false, reason: 'Missing one or more required fields' };
+
+  if (plain.length < 20 || analogy.length < 20 || step_by_step.length < 20) return { ok: false, reason: 'One or more fields are too short' };
+
+  // Ensure strict pairwise inequality
+  if (plain === analogy || plain === step_by_step || analogy === step_by_step) return { ok: false, reason: 'Fields must be distinct' };
+
+  return { ok: true, plain, analogy, step_by_step };
 }
 
 app.post('/api/explain', async (req, res) => {
@@ -52,44 +72,53 @@ app.post('/api/explain', async (req, res) => {
 
     const prompt = makePrompt(question.trim());
 
-    // Call Hugging Face Inference API
-    const url = `https://api-inference.huggingface.co/models/${encodeURIComponent(HF_MODEL)}`;
+    // Instantiate HF client with apiKey from env (never logged)
+    const hf = new HfInference({ apiKey: HF_TOKEN });
 
-    // Reasonable parameters for instruction-style models. Adjust max_new_tokens as necessary.
-    const payload = {
-      inputs: prompt,
-      parameters: {
-        max_new_tokens: 800,
-        temperature: 0.2,
-        top_p: 0.95
-      }
-    };
+    // Call the text generation endpoint via the official client. Keep parameters reasonable.
+    let hfResult;
+    try {
+      hfResult = await hf.textGeneration({
+        model: HF_MODEL,
+        inputs: prompt,
+        parameters: {
+          max_new_tokens: 800,
+          temperature: 0.2,
+          top_p: 0.95
+        }
+      });
+    } catch (e) {
+      // Log a non-sensitive error marker and return a safe 502 to client
+      console.error('HF inference request failed:', e && e.message ? e.message : 'unknown error');
+      return res.status(502).json({ error: 'Model inference failed. Please try again later.' });
+    }
 
-    const headers = {
-      Authorization: `Bearer ${HF_TOKEN}`,
-      Accept: 'application/json'
-    };
-
-    const hfResponse = await axios.post(url, payload, { headers, timeout: 120000 });
-
-    // Hugging Face usually returns plain text in hfResponse.data if model succeeded.
-    const raw = hfResponse.data;
-
+    // hfResult may be an object like { generated_text } or { error } or other shapes depending on model
     let textOutput = '';
 
-    if (typeof raw === 'string') {
-      textOutput = raw;
-    } else if (Array.isArray(raw) && raw.length > 0 && raw[0].generated_text) {
-      textOutput = raw[0].generated_text;
-    } else if (raw.generated_text) {
-      textOutput = raw.generated_text;
-    } else if (typeof raw === 'object' && raw.error) {
-      return res.status(502).json({ error: `Model error: ${raw.error}` });
-    } else if (typeof raw === 'object') {
-      // Fallback: try stringify
-      textOutput = JSON.stringify(raw);
+    if (!hfResult) {
+      return res.status(502).json({ error: 'Model returned an empty response.' });
+    }
+
+    if (typeof hfResult === 'string') {
+      textOutput = hfResult;
+    } else if (Array.isArray(hfResult) && hfResult.length > 0 && hfResult[0].generated_text) {
+      textOutput = hfResult[0].generated_text;
+    } else if (typeof hfResult === 'object' && hfResult.generated_text) {
+      textOutput = hfResult.generated_text;
+    } else if (typeof hfResult === 'object' && hfResult.error) {
+      console.error('HF model error:', hfResult.error);
+      return res.status(502).json({ error: 'Model returned an error.' });
+    } else if (typeof hfResult === 'object') {
+      // In some cases the client returns an object containing a 'generated_text' or other properties.
+      // Attempt to stringify safely for parsing.
+      try {
+        textOutput = JSON.stringify(hfResult);
+      } catch (e) {
+        return res.status(502).json({ error: 'Model returned an unparseable response.' });
+      }
     } else {
-      textOutput = String(raw);
+      textOutput = String(hfResult);
     }
 
     // Attempt to parse JSON output from the model
@@ -110,24 +139,25 @@ app.post('/api/explain', async (req, res) => {
       }
     }
 
-    if (parsed && typeof parsed === 'object') {
-      // Ensure keys exist, fall back to empty strings
-      const plain = String(parsed.plain || parsed.plain_text || parsed.simple || '');
-      const analogy = String(parsed.analogy || parsed.real_world_analogy || '') ;
-      const step_by_step = String(parsed.step_by_step || parsed.step_by_step_text || parsed.step_by_step || parsed.steps || '');
-
-      return res.json({ plain, analogy, step_by_step });
+    if (!parsed || typeof parsed !== 'object') {
+      // Do not expose raw model output
+      return res.status(502).json({ error: 'Model returned an unexpected or invalid response; please try again.' });
     }
 
-    // If parsed failed, return the raw text duplicated across fields as a fallback, but still keep structure.
-    const fallback = textOutput || 'The model returned an unexpected response format.';
-    return res.json({ plain: fallback, analogy: fallback, step_by_step: fallback });
+    // Validate parsed fields according to policy
+    const valid = validateResponse(parsed);
+    if (!valid.ok) {
+      // Do not expose model output or details
+      console.error('Validation failed for model response:', valid.reason);
+      return res.status(502).json({ error: 'Model returned an unexpected or invalid response; please try again.' });
+    }
+
+    // At this point, valid contains the cleaned strings
+    return res.json({ plain: valid.plain, analogy: valid.analogy, step_by_step: valid.step_by_step });
 
   } catch (err) {
-    console.error('Error in /api/explain:', err && err.toString());
-    if (err.response && err.response.data) {
-      return res.status(502).json({ error: 'Hugging Face API error', details: err.response.data });
-    }
+    // Generic internal error handling — do not leak sensitive info
+    console.error('Internal server error in /api/explain:', err && err.message ? err.message : 'unknown');
     return res.status(500).json({ error: 'Internal server error' });
   }
 });
